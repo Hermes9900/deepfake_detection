@@ -1,0 +1,91 @@
+version: "3.8"
+
+services:
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    ports:
+      - "9000:9000"
+    environment:
+      MINIO_ROOT_USER: "minioadmin"
+      MINIO_ROOT_PASSWORD: "minioadmin"
+    command: server /data
+    volumes:
+      - minio_data:/data
+
+  postgres:
+    image: postgres:15
+    container_name:postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: deepfake
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  ingestion_service:
+    build: ./ingestion_service
+    container_name: ingestion_service
+    ports:
+      - "8000:8000"
+    environment:
+      S3_ENDPOINT: "http://minio:9000"
+      S3_ACCESS_KEY: "minioadmin"
+      S3_SECRET_KEY: "minioadmin"
+      DB_HOST: "postgres"
+      DB_USER: "user"
+      DB_PASSWORD: "password"
+      DB_NAME: "deepfake"
+    depends_on:
+      - minio
+      - postgres
+
+  text_detector:
+    build: ./detectors/text_detector
+    container_name: text_detector
+    ports:
+      - "8001:8000"
+    depends_on:
+      - ingestion_service
+
+  image_detector:
+    build: ./detectors/image_detector
+    container_name: image_detector
+    ports:
+      - "8002:8000"
+    depends_on:
+      - ingestion_service
+
+  audio_detector:
+    build: ./detectors/audio_detector
+    container_name: audio_detector
+    ports:
+      - "8003:8000"
+    depends_on:
+      - ingestion_service
+
+  video_detector:
+    build: ./detectors/video_detector
+    container_name: video_detector
+    ports:
+      - "8004:8000"
+    depends_on:
+      - ingestion_service
+
+  fusion_service:
+    build: ./fusion_service
+    container_name: fusion_service
+    ports:
+      - "8005:8000"
+    depends_on:
+      - text_detector
+      - image_detector
+      - audio_detector
+      - video_detector
+
+volumes:
+  minio_data:
+  pgdata:

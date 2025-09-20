@@ -1,0 +1,8 @@
+spacy
+newspaper3k
+opencv-python
+mtcnn
+numpy
+Pillow
+librosa
+soundfile
