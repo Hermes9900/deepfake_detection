@@ -1,91 +1,102 @@
 version: "3.8"
 
 services:
-
-  minio:
-    image: minio/minio
-    container_name: minio
+  # 1. Frontend Service
+  frontend:
+    build: ./frontend_service
+    container_name: frontend_service
     ports:
-      - "9000:9000"
-    environment:
-      MINIO_ROOT_USER: "minioadmin"
-      MINIO_ROOT_PASSWORD: "minioadmin"
-    command: server /data
-    volumes:
-      - minio_data:/data
-
-  postgres:
-    image: postgres:15
-    container_name:postgres
-    environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: deepfake
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
-  ingestion_service:
-    build: ./ingestion_service
-    container_name: ingestion_service
-    ports:
-      - "8000:8000"
-    environment:
-      S3_ENDPOINT: "http://minio:9000"
-      S3_ACCESS_KEY: "minioadmin"
-      S3_SECRET_KEY: "minioadmin"
-      DB_HOST: "postgres"
-      DB_USER: "user"
-      DB_PASSWORD: "password"
-      DB_NAME: "deepfake"
+      - "8080:80" # Access the UI at http://localhost:8080
     depends_on:
-      - minio
-      - postgres
+      - orchestrator
 
+  # 2. Orchestrator Service
+  orchestrator:
+    build: ./orchestrator_service
+    container_name: orchestrator_service
+    volumes:
+      - ./preprocessors:/app/preprocessors
+    environment:
+      - DB_URL=postgresql://user:password@postgres:5432/deepfake
+      - S3_ENDPOINT=http://minio:9000
+      - S3_BUCKET=deepfake-blobs
+      - TEXT_DETECTOR_URL=http://text_detector:8100/predict
+      - IMAGE_DETECTOR_URL=http://image_detector:8300/predict
+      - AUDIO_DETECTOR_URL=http://audio_detector:8200/predict
+      - VIDEO_DETECTOR_URL=http://video_detector:8400/predict
+      - FUSION_SERVICE_URL=http://fusion_service:8500/fuse
+    depends_on:
+      - postgres
+      - minio
+
+  # 3. AI Detector & Fusion Services
   text_detector:
     build: ./detectors/text_detector
-    container_name: text_detector
-    ports:
-      - "8001:8000"
-    depends_on:
-      - ingestion_service
+    container_name: text_detector_service
+    volumes:
+      - ./models/text_nli:/app/model
 
   image_detector:
     build: ./detectors/image_detector
-    container_name: image_detector
-    ports:
-      - "8002:8000"
-    depends_on:
-      - ingestion_service
+    container_name: image_detector_service
+    volumes:
+      - ./models/image_detector.pth:/app/model.pth
+      - ./preprocessors:/app/preprocessors
 
   audio_detector:
     build: ./detectors/audio_detector
-    container_name: audio_detector
-    ports:
-      - "8003:8000"
-    depends_on:
-      - ingestion_service
+    container_name: audio_detector_service
+    volumes:
+      - ./models/audio_detector_model:/app/model
 
   video_detector:
     build: ./detectors/video_detector
-    container_name: video_detector
-    ports:
-      - "8004:8000"
+    container_name: video_detector_service
     depends_on:
-      - ingestion_service
+      - image_detector
 
   fusion_service:
     build: ./fusion_service
     container_name: fusion_service
+    volumes:
+      - ./fusion_service/fusion_model.pkl:/app/fusion_model.pkl
+
+  # 4. Infrastructure
+  postgres:
+    image: postgres:13
+    container_name: postgres_db
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=deepfake
+    volumes:
+      # THIS IS THE ONLY CHANGED LINE: Points to init.sql inside ingestion_service
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio_s3
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
     ports:
-      - "8005:8000"
+      - "9000:9000"
+      - "9001:9001"
+
+  create-bucket:
+    image: amazon/aws-cli:2.4.4
     depends_on:
-      - text_detector
-      - image_detector
-      - audio_detector
-      - video_detector
+      - minio
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+    entrypoint: >
+      /bin/sh -c "
+        sleep 5;
+        aws --endpoint-url http://minio:9000 s3api create-bucket --bucket deepfake-blobs --region us-east-1 || true;
+      "
 
 volumes:
-  minio_data:
-  pgdata:
+  postgres_data:

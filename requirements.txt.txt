@@ -1,0 +1,30 @@
+# General ML, Data Handling, and Utilities
+scikit-learn
+pandas
+Pillow
+numpy
+
+# --- Core Deep Learning Libraries ---
+
+# PyTorch (NOTE: Install the GPU version separately using the official command)
+# These are listed here for completeness.
+torch
+torchvision
+torchaudio
+
+# PyTorch Image Models (for the image detector)
+timm
+
+# Hugging Face Ecosystem (for text and audio detectors)
+transformers
+datasets
+accelerate
+
+# --- Audio-Specific Libraries ---
+
+# For processing audio files
+librosa
+soundfile
+
+# For efficient audio/video loading in Hugging Face Datasets
+torchcodec
