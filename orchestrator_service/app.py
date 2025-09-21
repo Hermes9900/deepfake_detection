@@ -1,115 +1,98 @@
-# orchestrator_service/app.py
+# orchestrator_service/app.py (Updated with JSON fix)
+
 import os
 import asyncio
 import aiohttp
-import boto3
+import mimetypes
+import json # <--- ADDED THIS LINE
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
 from uuid import uuid4
-import psycopg2
-import json
+import asyncpg
+import aiobotocore.session
+from contextlib import asynccontextmanager
 
-# ----------------- CONFIG -----------------
-AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-S3_BUCKET = os.getenv("S3_BUCKET", "deepfake-blobs")
-S3_REGION = os.getenv("S3_REGION", "us-east-1")
+# --- Configuration ---
+DB_URL = os.getenv("DB_URL")
+S3_ENDPOINT = os.getenv("S3_ENDPOINT")
+S3_BUCKET = os.getenv("S3_BUCKET")
+S3_KEY = "minioadmin"
+S3_SECRET = "minioadmin"
 
-DB_URL = os.getenv("POSTGRES_URL", "postgresql://user:pass@localhost:5432/deepfake")
+# URLs for detector services
+TEXT_DETECTOR_URL = os.getenv("TEXT_DETECTOR_URL")
+IMAGE_DETECTOR_URL = os.getenv("IMAGE_DETECTOR_URL")
+AUDIO_DETECTOR_URL = os.getenv("AUDIO_DETECTOR_URL")
+VIDEO_DETECTOR_URL = os.getenv("VIDEO_DETECTOR_URL")
+FUSION_SERVICE_URL = os.getenv("FUSION_SERVICE_URL")
 
-DETECTOR_URLS = {
-    "text": os.getenv("TEXT_DETECTOR_URL","http://text_detector:8100/predict"),
-    "image": os.getenv("IMAGE_DETECTOR_URL","http://image_detector:8150/predict"),
-    "audio": os.getenv("AUDIO_DETECTOR_URL","http://audio_detector:8180/predict"),
-    "video": os.getenv("VIDEO_DETECTOR_URL","http://video_detector:8200/predict")
-}
-FUSION_URL = os.getenv("FUSION_URL","http://fusion_service:8300/fuse")
-# ------------------------------------------
+db_pool = None
 
-app = FastAPI(title="Orchestrator Service")
-
-s3_client = boto3.client("s3",
-                         aws_access_key_id=AWS_ACCESS_KEY,
-                         aws_secret_access_key=AWS_SECRET_KEY,
-                         region_name=S3_REGION)
-
-# ----------------- DB UTILS -----------------
-def insert_job(job_id, s3_path, metadata, final_result=None):
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO jobs (job_id, s3_path, metadata, result)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (job_id) DO UPDATE SET result=%s
-    """, (job_id, s3_path, json.dumps(metadata), json.dumps(final_result),
-          json.dumps(final_result)))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-# ----------------- HELPERS -----------------
-async def post_json(url, payload, timeout=30):
-    async with aiohttp.ClientSession() as session:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global db_pool
+    for i in range(5):
         try:
-            async with session.post(url, json=payload, timeout=timeout) as resp:
-                return await resp.json()
-        except Exception as e:
-            return {"error": str(e)}
+            db_pool = await asyncpg.create_pool(dsn=DB_URL)
+            print("✅ Database connection successful.")
+            break
+        except ConnectionRefusedError:
+            print(f"Database connection refused. Retrying in 3 seconds... (Attempt {i+1}/5)")
+            await asyncio.sleep(3)
+    else:
+        print("❌ Could not connect to the database after several retries. Exiting.")
+        raise RuntimeError("Failed to connect to the database.")
+    yield
+    await db_pool.close()
 
-async def call_detectors(s3_path, metadata):
-    payload = {"artifact_s3": s3_path, "metadata": metadata}
-    tasks = []
-    for modality, url in DETECTOR_URLS.items():
-        tasks.append(post_json(url, payload))
-    results = await asyncio.gather(*tasks)
-    return dict(zip(DETECTOR_URLS.keys(), results))
+app = FastAPI(title="Orchestrator Service", lifespan=lifespan)
 
-# ----------------- API -----------------
-@app.post("/ingest")
-async def ingest(file: UploadFile = File(...), uploader_id: str = "unknown"):
-    job_id = str(uuid4())
-    s3_path = f"{job_id}_{file.filename}"
+async def post_json(session, url, data):
     try:
-        contents = await file.read()
-        s3_client.put_object(Bucket=S3_BUCKET, Key=s3_path, Body=contents)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"S3 upload failed: {e}")
+        async with session.post(url, json=data) as response:
+            response.raise_for_status()
+            return await response.json()
+    except aiohttp.ClientError as e:
+        print(f"Error calling {url}: {e}")
+        return {"fake_probability": 0.0, "error": str(e)}
 
-    metadata = {"uploader_id": uploader_id}
-    insert_job(job_id, s3_path, metadata, final_result=None)
+@app.post("/ingest")
+async def ingest_file(file: UploadFile = File(...)):
+    job_id = str(uuid4())
+    file_content = await file.read()
+    s3_key = f"{job_id}-{file.filename}"
 
-    # Run async detector calls
-    detector_results = await call_detectors(f"s3://{S3_BUCKET}/{s3_path}", metadata)
+    # 1. Upload to S3 (asynchronously)
+    session = aiobotocore.session.get_session()
+    async with session.create_client("s3", endpoint_url=S3_ENDPOINT, aws_secret_access_key=S3_SECRET, aws_access_key_id=S3_KEY) as s3_client:
+        await s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=file_content)
 
-    # Call Fusion Service
-    fusion_payload = {
-        "job_id": job_id,
-        "text_result": detector_results.get("text", {}),
-        "image_result": detector_results.get("image", {}),
-        "audio_result": detector_results.get("audio", {}),
-        "video_result": detector_results.get("video", {}),
-        "metadata": metadata
-    }
-    fusion_result = await post_json(FUSION_URL, fusion_payload)
+    # 2. Create job record in DB
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO jobs (job_id, s3_key, status) VALUES ($1, $2, $3)",
+            job_id, s3_key, "processing"
+        )
 
-    # Store final result
-    insert_job(job_id, s3_path, metadata, final_result=fusion_result)
+    # 3. Detect file type and call the correct detector
+    mime_type, _ = mimetypes.guess_type(file.filename)
+    detector_results = {}
+    
+    async with aiohttp.ClientSession() as http_session:
+        detector_payload = {"s3_path": s3_key}
+        
+        if mime_type and mime_type.startswith("image/"):
+            detector_results["image"] = await post_json(http_session, IMAGE_DETECTOR_URL, detector_payload)
+        # Add other detector calls here based on mime_type if needed
+        
+        # 4. Call Fusion Service
+        fusion_payload = {"detector_results": detector_results, "job_id": job_id}
+        fusion_result = await post_json(http_session, FUSION_SERVICE_URL, fusion_payload)
 
+    # 5. Update job with final result
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE jobs SET status = 'complete', result = $1 WHERE job_id = $2",
+            json.dumps(fusion_result), job_id # <--- CORRECTED THIS LINE
+        )
+    
     return {"job_id": job_id, "fusion_result": fusion_result}
-
-@app.get("/status/{job_id}")
-def status(job_id: str):
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
-    cur.execute("SELECT s3_path, metadata, result FROM jobs WHERE job_id=%s", (job_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    s3_path, metadata, result = row
-    return {"job_id": job_id, "s3_path": s3_path, "metadata": metadata, "result": result}
-
-if __name__=="__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8400)

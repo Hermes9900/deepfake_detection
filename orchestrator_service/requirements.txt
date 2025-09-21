@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-boto3
 aiohttp
-psycopg2-binary
-pydantic
+asyncpg
+aiobotocore
+python-multipart
