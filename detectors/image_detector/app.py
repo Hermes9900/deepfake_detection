@@ -1,38 +1,60 @@
+import os
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from detectors.image_detector import model
-import numpy as np
-import cv2
-import uuid
+from PIL import Image
+import torch
+import io
+# CORRECTED IMPORT: Removed the leading dot from '.model'
+from model import get_model, get_prediction_transform
 
-app = FastAPI(title="Image Detector Service")
+app = FastAPI(title="Image Deepfake Detector")
 
-@app.post("/api/image/detect")
-async def detect(file: UploadFile = File(...)):
-    """
-    Detects manipulated image.
-    Steps:
-    1. Read image file
-    2. Preprocess
-    3. Predict with Xception
-    4. Return image_score (0-1), mask placeholder, reason_codes
-    """
+# --- Model Loading ---
+MODEL_PATH = "models/image_detector.pth"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = None
+
+@app.on_event("startup")
+def load_model():
+    """Load the trained model when the service starts."""
+    global model
+    if not os.path.exists(MODEL_PATH):
+        print(f"WARNING: Model file not found at {MODEL_PATH}. The '/predict' endpoint will not work.")
+        return
+    
     try:
-        image_bytes = await file.read()
-        np_arr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        img_resized = cv2.resize(img, (299, 299))
-        
-        score = model.predict_image(img_resized)
-        
-        # For demo, mask is all zeros (replace with U-Net for real localization)
-        mask = np.zeros((299,299)).tolist()
-        
-        reason_codes = []
-        if score > 0.7:
-            reason_codes.append("manipulated_confident")
-        
-        return {"image_score": round(float(score),2),
-                "mask": mask,
-                "reason_codes": reason_codes}
+        model = get_model()
+        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+        model.to(device)
+        model.eval()
+        print(f"Image detector model loaded successfully from {MODEL_PATH}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error loading image model: {e}")
+
+transform = get_prediction_transform()
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    if not model:
+        raise HTTPException(status_code=503, detail="Model is not available.")
+
+    contents = await file.read()
+    try:
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image file.")
+
+    with torch.no_grad():
+        input_tensor = transform(image).unsqueeze(0).to(device)
+        output = model(input_tensor)
+        probability = torch.sigmoid(output).item()
+
+    label = "fake" if probability > 0.5 else "real"
+    return {
+        "filename": file.filename,
+        "prediction": label,
+        "fake_probability": round(probability, 4)
+    }
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "model_loaded": model is not None}

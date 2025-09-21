@@ -6,3 +6,4 @@ timm
 opencv-python
 numpy
 Pillow
+python-multipart
