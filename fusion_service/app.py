@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from fusion_service import fusion_model
+# CORRECTED IMPORT: Changed from 'from fusion_service import fusion_model'
+import fusion_model
 import numpy as np
 
 app = FastAPI(title="Fusion Service")
@@ -16,12 +17,13 @@ class DetectorResults(BaseModel):
     video_score: float = 0.0
     av_sync_score: float = 0.0
 
-@app.post("/api/fuse")
+@app.post("/fuse")
 def fuse(results: DetectorResults):
     """
     Combine detector outputs into a single fake_probability and reason_codes
     """
     try:
+        # Create the feature vector for the model
         features = np.array([[
             results.text_score,
             results.llm_flag,
@@ -33,8 +35,18 @@ def fuse(results: DetectorResults):
             results.video_score,
             results.av_sync_score
         ]])
+        
+        # Get the prediction from the fusion model
         fake_prob, reason_codes = fusion_model.predict_fusion(features)
-        return {"fake_probability": round(float(fake_prob),2),
-                "reason_codes": reason_codes}
+        
+        return {
+            "fake_probability": round(float(fake_prob), 4),
+            "reason_codes": reason_codes
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"An error occurred during fusion: {e}")
+        raise HTTPException(status_code=500, detail="An internal error occurred during result fusion.")
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
