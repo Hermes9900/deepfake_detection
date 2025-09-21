@@ -40,4 +40,5 @@ The project has been refactored for a clear, repeatable, and robust machine lear
 -   **`orchestrator_service`**: Manages the detection workflow by calling individual detectors and the fusion service.
 -   **`detectors`**: Individual services for `image`, `text`, `audio`, and `video` detection.
 -   **`fusion_service`**: Aggregates scores from all detectors to produce a final, unified prediction.
+-   dataset download link : https://drive.google.com/drive/folders/1JxVAKiCXBHAOk4zeXNRJnD3bwmZEiW9R?usp=drive_link
 -   **`MinIO` & `Postgres`**: Backend storage for files and job metadata.
