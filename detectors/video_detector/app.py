@@ -1,53 +1,83 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 import cv2
 import numpy as np
+import requests
+import os
 import tempfile
-import subprocess
-from detectors.video_detector import model_utils
 
-app = FastAPI(title="Video Detector Service")
+app = FastAPI(title="Video Deepfake Detector")
 
-@app.post("/api/video/detect")
-async def detect(file: UploadFile = File(...)):
-    """
-    Detect manipulated video.
-    Steps:
-    1. Save uploaded video temporarily
-    2. Extract frames
-    3. Run frame-level image detector
-    4. Compute AV-sync score (placeholder)
-    5. Return video_score, av_sync_score, frame_flags
-    """
+# Get the URL of the image detector service from an environment variable.
+# The default value "http://image_detector:8000" works inside Docker Compose.
+IMAGE_DETECTOR_URL = os.getenv("IMAGE_DETECTOR_URL", "http://image_detector:8000/predict")
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    # Use a temporary file to save the uploaded video so OpenCV can read it
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+        tmp.write(await file.read())
+        video_path = tmp.name
+
     try:
-        # Save uploaded video
-        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        tmp_file.write(await file.read())
-        tmp_file.close()
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise HTTPException(status_code=400, detail="Could not open video file.")
+
+        frame_scores = []
+        frame_count = 0
         
-        # Extract frames at 1fps for overview
-        cap = cv2.VideoCapture(tmp_file.name)
-        frame_flags = []
-        frame_idx = 0
-        success, frame = cap.read()
-        while success:
-            # Dummy frame score
-            score = model_utils.predict_frame(frame)
-            frame_flags.append({"frame_idx": frame_idx, "score": round(float(score),2)})
-            frame_idx += 1
-            # Skip 29 frames (~1s at 30fps)
-            for _ in range(29):
-                success, frame = cap.read()
-        
-        # Placeholder AV-sync score
-        av_sync_score = model_utils.predict_av_sync(tmp_file.name)
-        
-        # Video-level score: average of frame scores
-        video_score = np.mean([f["score"] for f in frame_flags]) if frame_flags else 0
+        # Get the video's frames per second (fps) to sample correctly
+        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        if fps == 0:
+            fps = 30 # Default to 30 if fps is not available
+
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Sample one frame per second to be efficient
+            if frame_count % fps == 0:
+                # Convert the OpenCV frame (numpy array) to bytes for the HTTP request
+                _, img_encoded = cv2.imencode(".jpg", frame)
+                frame_bytes = img_encoded.tobytes()
+
+                try:
+                    # Call the image detector service with the frame
+                    response = requests.post(
+                        IMAGE_DETECTOR_URL,
+                        files={'file': ('frame.jpg', frame_bytes, 'image/jpeg')}
+                    )
+                    if response.status_code == 200:
+                        score = response.json().get('fake_probability', 0.0)
+                        frame_scores.append(score)
+                except requests.RequestException as e:
+                    print(f"Warning: Could not connect to image detector: {e}")
+                    # Allow the service to continue even if some frames fail
+                    continue
+            
+            frame_count += 1
+            
+        cap.release()
+
+        if not frame_scores:
+            raise HTTPException(status_code=500, detail="No frames were successfully analyzed. Check if the image_detector service is running.")
+            
+        # Aggregate scores: The maximum fake score from any frame is a strong indicator.
+        # If even one frame is clearly a deepfake, the video is likely fake.
+        final_score = max(frame_scores)
         
         return {
-            "video_score": round(float(video_score),2),
-            "av_sync_score": round(float(av_sync_score),2),
-            "frame_flags": frame_flags
+            "prediction": "fake" if final_score > 0.5 else "real",
+            "fake_probability": round(final_score, 4),
+            "frames_analyzed": len(frame_scores),
+            "detail": "The probability is based on the highest fake score found among the analyzed frames."
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up the temporary file from the system
+        os.unlink(video_path)
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint."""
+    return {"status": "ok"}
