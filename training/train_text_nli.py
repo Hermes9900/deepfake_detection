@@ -1,64 +1,93 @@
-from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments
-import torch
 import json
-
-# Load dataset from JSONL
-dataset_file = "../data_generators/text_dataset.jsonl"
-examples = []
-with open(dataset_file) as f:
-    for line in f:
-        examples.append(json.loads(line))
-
-# Convert to train/val split
-train_examples = examples[:16]
-val_examples = examples[16:]
-
-tokenizer = AutoTokenizer.from_pretrained("roberta-base")
-
-def tokenize(batch):
-    return tokenizer(batch['text'], truncation=True, padding='max_length', max_length=128)
-
-# Prepare input & labels
-class TextDataset(torch.utils.data.Dataset):
-    def __init__(self, examples):
-        self.examples = examples
-        self.tokenizer = tokenizer
-
-    def __len__(self):
-        return len(self.examples)
-
-    def __getitem__(self, idx):
-        item = self.examples[idx]
-        tokens = self.tokenizer(item['text'], truncation=True, padding='max_length', max_length=128, return_tensors='pt')
-        label = 1 if any(cl['label']=="REFUTED" for cl in item['claims']) else 0
-        return {key: val.squeeze(0) for key,val in tokens.items()}, torch.tensor(label)
-
-train_dataset = TextDataset(train_examples)
-val_dataset = TextDataset(val_examples)
-
-model = AutoModelForSequenceClassification.from_pretrained("roberta-base", num_labels=2)
-
-training_args = TrainingArguments(
-    output_dir="./text_model",
-    num_train_epochs=1,
-    per_device_train_batch_size=4,
-    per_device_eval_batch_size=4,
-    evaluation_strategy="epoch",
-    save_strategy="epoch",
-    logging_steps=10,
-    learning_rate=2e-5
+from pathlib import Path
+from datasets import load_dataset
+from transformers import (
+    DistilBertTokenizerFast,
+    DistilBertForSequenceClassification,
+    Trainer,
+    TrainingArguments,
 )
 
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=val_dataset
-)
+# --- Paths ---
+DATA_FILE = Path("data/processed/text/text_dataset.jsonl")
+MODEL_DIR = Path("models/text_nli")
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-trainer.train()
-model.save_pretrained("./text_model")
-tokenizer.save_pretrained("./text_model")
+def main():
+    print("Loading dataset...")
 
-print("Text NLI model trained and saved in ./text_model")
+    if not DATA_FILE.exists():
+        raise FileNotFoundError(
+            f"Processed dataset not found at {DATA_FILE}. "
+            "Run the preprocessing script first."
+        )
+
+    # Load JSONL dataset
+    dataset = load_dataset("json", data_files=str(DATA_FILE))
+
+    # Convert "real"/"fake" into numerical labels
+    def encode_labels(example):
+        example["label"] = 0 if example["label"] == "real" else 1
+        return example
+
+    dataset = dataset.map(encode_labels)
+
+    # Train/test split
+    dataset = dataset["train"].train_test_split(test_size=0.2, seed=42)
+
+    # Load tokenizer
+    tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
+
+    def tokenize_function(examples):
+        return tokenizer(
+            examples["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=256,
+        )
+
+    tokenized_datasets = dataset.map(tokenize_function, batched=True)
+
+    # Load model
+    model = DistilBertForSequenceClassification.from_pretrained(
+        "distilbert-base-uncased",
+        num_labels=2
+    )
+
+    # --- Training arguments (legacy-compatible) ---
+    training_args = TrainingArguments(
+        output_dir=str(MODEL_DIR / "results"),
+        do_train=True,
+        do_eval=True,
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=16,
+        num_train_epochs=3,
+        learning_rate=2e-5,
+        weight_decay=0.01,
+        logging_dir=str(MODEL_DIR / "logs"),
+        logging_steps=50,
+        save_steps=500,
+        save_total_limit=2,
+    )
+
+    # Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=tokenized_datasets["train"],
+        eval_dataset=tokenized_datasets["test"],
+        tokenizer=tokenizer,
+    )
+
+    # --- Start training ---
+    print("Starting training on downstream task...")
+    trainer.train()
+
+    # --- Save model ---
+    print(f"Saving model to {MODEL_DIR}...")
+    trainer.save_model(MODEL_DIR)
+    tokenizer.save_pretrained(MODEL_DIR)
+    print("✅ Training complete!")
+
+if __name__ == "__main__":
+    main()
