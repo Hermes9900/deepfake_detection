@@ -1,5 +1,11 @@
 fastapi
 uvicorn[standard]
+python-multipart
+# Core ML libraries
+torch
+transformers
+# Audio processing
 librosa
-numpy
+datasets
 soundfile
+accelerate
