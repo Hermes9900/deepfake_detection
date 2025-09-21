@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deepfake Detector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .result-bar-inner { transition: width 1.5s ease-in-out; }
+        .file-drop-zone { transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out; }
+        .file-drop-zone.drag-over { background-color: #e0f2fe; border-color: #0284c7; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans flex items-center justify-center min-h-screen">
+
+    <div class="bg-white rounded-xl shadow-2xl p-8 max-w-2xl w-full m-4">
+
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800">Deepfake Detector</h1>
+            <p class="text-gray-500 mt-2">Upload an image, video, or audio file to analyze its authenticity.</p>
+        </div>
+
+        <!-- File Upload Form -->
+        <form id="uploadForm">
+            <div id="fileDropZone" class="file-drop-zone border-4 border-dashed border-gray-300 rounded-lg p-10 text-center cursor-pointer">
+                <input type="file" id="fileInput" class="hidden" accept="image/*,video/*,audio/*">
+                <div id="uploadPlaceholder">
+                    <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true"><path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h-8.284a1 1 0 00-.707.293L12 28m0 0l4 4m4-24h-8.284a1 1 0 00-.707.293L12 28" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                    <p class="mt-2 text-gray-500"><span class="font-semibold text-sky-600">Click to upload</span> or drag and drop</p>
+                </div>
+                <div id="fileNameDisplay" class="hidden font-semibold text-gray-700"></div>
+            </div>
+            <button id="analyzeButton" type="submit" disabled class="mt-6 w-full bg-sky-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-sky-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
+                Analyze File
+            </button>
+        </form>
+
+        <!-- Results Section -->
+        <div id="resultSection" class="hidden mt-8 text-center">
+            <!-- Loading Spinner -->
+            <div id="loadingSpinner">
+                <svg class="animate-spin mx-auto h-10 w-10 text-sky-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <p id="statusText" class="mt-4 text-gray-600 font-semibold">Analyzing... This may take a moment for large files.</p>
+            </div>
+
+            <!-- Final Result Display -->
+            <div id="resultDisplay" class="hidden">
+                <h2 class="text-2xl font-bold text-gray-800 mb-4">Analysis Result</h2>
+                <div id="verdict" class="text-3xl font-bold mb-4">&nbsp;</div>
+                <div class="w-full bg-gray-200 rounded-full h-8">
+                    <div id="resultBar" class="result-bar-inner bg-red-600 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                        <span id="resultText"></span>
+                    </div>
+                </div>
+                <div id="errorDisplay" class="hidden mt-4 text-red-600 bg-red-100 border border-red-400 rounded-lg p-4"></div>
+                <button id="resetButton" class="mt-8 bg-gray-600 text-white font-bold py-3 px-6 rounded-lg hover:bg-gray-700 transition-colors">
+                    Analyze Another File
+                </button>
+            </div>
+        </div>
+    </div>
+
+<script>
+    const uploadForm = document.getElementById('uploadForm');
+    const fileInput = document.getElementById('fileInput');
+    const fileDropZone = document.getElementById('fileDropZone');
+    const uploadPlaceholder = document.getElementById('uploadPlaceholder');
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
+    const analyzeButton = document.getElementById('analyzeButton');
+    const resultSection = document.getElementById('resultSection');
+    const loadingSpinner = document.getElementById('loadingSpinner');
+    const resultDisplay = document.getElementById('resultDisplay');
+    const verdict = document.getElementById('verdict');
+    const resultBar = document.getElementById('resultBar');
+    const resultText = document.getElementById('resultText');
+    const errorDisplay = document.getElementById('errorDisplay');
+    const resetButton = document.getElementById('resetButton');
+
+    let selectedFile = null;
+
+    function handleFile(file) {
+        if (file) {
+            selectedFile = file;
+            uploadPlaceholder.classList.add('hidden');
+            fileNameDisplay.textContent = file.name;
+            fileNameDisplay.classList.remove('hidden');
+            analyzeButton.disabled = false;
+        }
+    }
+
+    function resetUI() {
+        selectedFile = null;
+        uploadForm.reset();
+        uploadPlaceholder.classList.remove('hidden');
+        fileNameDisplay.classList.add('hidden');
+        analyzeButton.disabled = true;
+        resultSection.classList.add('hidden');
+        loadingSpinner.classList.remove('hidden');
+        resultDisplay.classList.add('hidden');
+        errorDisplay.classList.add('hidden');
+        uploadForm.classList.remove('hidden');
+        setTimeout(() => {
+            resultBar.style.width = '0%';
+            resultBar.classList.remove('bg-green-600', 'bg-red-600');
+        }, 500);
+    }
+    
+    fileDropZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => fileInput.files.length > 0 && handleFile(fileInput.files[0]));
+    fileDropZone.addEventListener('dragover', (e) => { e.preventDefault(); fileDropZone.classList.add('drag-over'); });
+    fileDropZone.addEventListener('dragleave', (e) => { e.preventDefault(); fileDropZone.classList.remove('drag-over'); });
+    fileDropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        fileDropZone.classList.remove('drag-over');
+        e.dataTransfer.files.length > 0 && handleFile(e.dataTransfer.files[0]);
+    });
+
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!selectedFile) return;
+
+        uploadForm.classList.add('hidden');
+        resultSection.classList.remove('hidden');
+        
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('uploader_id', 'web-ui');
+
+        try {
+            // This URL is handled by our Nginx reverse proxy
+            const response = await fetch('/ingest', { method: 'POST', body: formData });
+            
+            if (!response.ok) {
+                const errorData = await response.text();
+                throw new Error(`Server error: ${response.status} - ${errorData}`);
+            }
+
+            const data = await response.json();
+            // Assuming the orchestrator returns a similar structure to our previous script
+            const fusionResult = data.fusion_result || data;
+            const fakeProb = fusionResult.fake_probability || 0;
+            const percentage = (fakeProb * 100).toFixed(1);
+
+            loadingSpinner.classList.add('hidden');
+            resultDisplay.classList.remove('hidden');
+            
+            if (fakeProb > 0.5) {
+                verdict.textContent = "Result: Likely FAKE";
+                verdict.className = "text-3xl font-bold mb-4 text-red-600";
+                resultBar.classList.add('bg-red-600');
+            } else {
+                verdict.textContent = "Result: Likely REAL";
+                verdict.className = "text-3xl font-bold mb-4 text-green-600";
+                resultBar.classList.add('bg-green-600');
+            }
+            
+            setTimeout(() => {
+                resultBar.style.width = `${percentage}%`;
+                resultText.textContent = `Fake Probability: ${percentage}%`;
+            }, 100);
+
+        } catch (error) {
+            loadingSpinner.classList.add('hidden');
+            resultDisplay.classList.remove('hidden');
+            errorDisplay.textContent = `Analysis failed: ${error.message}. Please try again.`;
+            errorDisplay.classList.remove('hidden');
+        }
+    });
+
+    resetButton.addEventListener('click', resetUI);
+</script>
+</body>
+</html>
