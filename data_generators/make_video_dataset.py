@@ -1,36 +1,47 @@
-import json
-from pathlib import Path
-import numpy as np
-import cv2
+import os
+import shutil
+from sklearn.model_selection import train_test_split
 
-OUTPUT_DIR = "video_dataset"
-Path(OUTPUT_DIR).mkdir(exist_ok=True)
-metadata_file = Path(OUTPUT_DIR)/"metadata.jsonl"
-metadata_file.unlink(missing_ok=True)
+# --- Configuration ---
+RAW_DATA_DIR = 'data/raw/video'
+PROCESSED_DATA_DIR = 'data/processed/video'
+VALIDATION_SPLIT = 0.2
+RANDOM_SEED = 42
 
-# Create 2 real + 2 fake dummy videos
-for i in range(2):
-    fname = Path(OUTPUT_DIR)/f"real_{i}.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(fname), fourcc, 5.0, (64,64))
-    for _ in range(10):  # 10 frames
-        frame = (np.random.rand(64,64,3)*255).astype(np.uint8)
-        out.write(frame)
-    out.release()
-    meta = {"file":str(fname),"label":"real"}
-    with open(metadata_file,"a") as f:
-        f.write(json.dumps(meta)+"\n")
+def copy_files(file_paths, destination_folder):
+    """Copies a list of files to a destination folder."""
+    os.makedirs(destination_folder, exist_ok=True)
+    for file_path in file_paths:
+        try:
+            shutil.copy(file_path, destination_folder)
+        except Exception as e:
+            print(f"Error copying file {file_path}: {e}")
 
-for i in range(2):
-    fname = Path(OUTPUT_DIR)/f"fake_{i}.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(fname), fourcc, 5.0, (64,64))
-    for _ in range(10):
-        frame = (np.random.rand(64,64,3)*255).astype(np.uint8)
-        out.write(frame)
-    out.release()
-    meta = {"file":str(fname),"label":"fake","manip_type":"face_swap"}
-    with open(metadata_file,"a") as f:
-        f.write(json.dumps(meta)+"\n")
+def main():
+    print("Starting video dataset organization...")
+    if os.path.exists(PROCESSED_DATA_DIR):
+        shutil.rmtree(PROCESSED_DATA_DIR)
 
-print(f"Video dataset created in {OUTPUT_DIR}/")
+    real_path = os.path.join(RAW_DATA_DIR, 'real')
+    fake_path = os.path.join(RAW_DATA_DIR, 'fake')
+
+    # Find all common video files
+    video_extensions = ('.mp4', '.mov', '.avi', '.mkv')
+    real_files = [os.path.join(real_path, f) for f in os.listdir(real_path) if f.lower().endswith(video_extensions)]
+    fake_files = [os.path.join(fake_path, f) for f in os.listdir(fake_path) if f.lower().endswith(video_extensions)]
+    print(f"Found {len(real_files)} real videos and {len(fake_files)} fake videos.")
+
+    # Create train/validation splits
+    real_train, real_val = train_test_split(real_files, test_size=VALIDATION_SPLIT, random_state=RANDOM_SEED)
+    fake_train, fake_val = train_test_split(fake_files, test_size=VALIDATION_SPLIT, random_state=RANDOM_SEED)
+
+    # Copy files to the processed directory structure
+    copy_files(real_train, os.path.join(PROCESSED_DATA_DIR, 'train', 'real'))
+    copy_files(fake_train, os.path.join(PROCESSED_DATA_DIR, 'train', 'fake'))
+    copy_files(real_val, os.path.join(PROCESSED_DATA_DIR, 'val', 'real'))
+    copy_files(fake_val, os.path.join(PROCESSED_DATA_DIR, 'val', 'fake'))
+
+    print("Video dataset organization complete!")
+
+if __name__ == '__main__':
+    main()
