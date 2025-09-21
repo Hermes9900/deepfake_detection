@@ -1,30 +1,46 @@
-import json
-from pathlib import Path
-import numpy as np
-import soundfile as sf
+import os
+import shutil
+from sklearn.model_selection import train_test_split
 
-OUTPUT_DIR = "audio_dataset"
-Path(OUTPUT_DIR).mkdir(exist_ok=True)
-metadata_file = Path(OUTPUT_DIR)/"metadata.jsonl"
-metadata_file.unlink(missing_ok=True)
+# --- Configuration ---
+RAW_DATA_DIR = 'data/raw/audio'
+PROCESSED_DATA_DIR = 'data/processed/audio'
+VALIDATION_SPLIT = 0.2
+RANDOM_SEED = 42
 
-sr = 16000
-duration = 2  # seconds
+def copy_files(file_paths, destination_folder):
+    """Copies a list of files to a destination folder."""
+    os.makedirs(destination_folder, exist_ok=True)
+    for file_path in file_paths:
+        try:
+            shutil.copy(file_path, destination_folder)
+        except Exception as e:
+            print(f"Error copying file {file_path}: {e}")
 
-for i in range(5):
-    y = np.random.randn(sr*duration)
-    fname = Path(OUTPUT_DIR)/f"real_{i}.wav"
-    sf.write(fname, y, sr)
-    meta = {"file":str(fname),"label":"bona_fide"}
-    with open(metadata_file,"a") as f:
-        f.write(json.dumps(meta)+"\n")
+def main():
+    print("Starting audio dataset generation...")
+    if os.path.exists(PROCESSED_DATA_DIR):
+        shutil.rmtree(PROCESSED_DATA_DIR)
 
-for i in range(5):
-    y = np.random.randn(sr*duration)
-    fname = Path(OUTPUT_DIR)/f"fake_{i}.wav"
-    sf.write(fname, y, sr)
-    meta = {"file":str(fname),"label":"spoof","attack_type":"TTS"}
-    with open(metadata_file,"a") as f:
-        f.write(json.dumps(meta)+"\n")
+    real_path = os.path.join(RAW_DATA_DIR, 'real')
+    fake_path = os.path.join(RAW_DATA_DIR, 'fake')
 
-print(f"Audio dataset created in {OUTPUT_DIR}/")
+    # Find all audio files (e.g., .wav, .mp3)
+    real_files = [os.path.join(real_path, f) for f in os.listdir(real_path) if f.endswith(('.wav', '.mp3', '.flac'))]
+    fake_files = [os.path.join(fake_path, f) for f in os.listdir(fake_path) if f.endswith(('.wav', '.mp3', '.flac'))]
+    print(f"Found {len(real_files)} real audio files and {len(fake_files)} fake audio files.")
+
+    # Create train/validation splits
+    real_train, real_val = train_test_split(real_files, test_size=VALIDATION_SPLIT, random_state=RANDOM_SEED)
+    fake_train, fake_val = train_test_split(fake_files, test_size=VALIDATION_SPLIT, random_state=RANDOM_SEED)
+
+    # Copy files to the processed directory structure
+    copy_files(real_train, os.path.join(PROCESSED_DATA_DIR, 'train', 'real'))
+    copy_files(fake_train, os.path.join(PROCESSED_DATA_DIR, 'train', 'fake'))
+    copy_files(real_val, os.path.join(PROCESSED_DATA_DIR, 'val', 'real'))
+    copy_files(fake_val, os.path.join(PROCESSED_DATA_DIR, 'val', 'fake'))
+
+    print("Audio dataset generation complete!")
+
+if __name__ == '__main__':
+    main()
